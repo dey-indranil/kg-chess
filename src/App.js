@@ -8,7 +8,7 @@ const App = () => {
   const [game, setGame] = useState(new Chess());
   const [gameCode, setGameCode] = useState("");
   const [peer, setPeer] = useState(null);
-  const [connection, setConnection] = useState(null);
+  const [connections, setConnections] = useState([]);
   const [isHost, setIsHost] = useState(false);
   const [peerId, setPeerId] = useState(null);
 
@@ -26,32 +26,38 @@ const App = () => {
 
     peer.on("connection", (conn) => {
       console.log("New connection established");
+      setConnections((prevConnections) => [...prevConnections, conn]);
       conn.on("open", () => {
         console.log("Connection is open");
-        setConnection(conn);
+        conn.send({ type: "sync", fen: game.fen() }); // Send current game state to new joiners
       });
       conn.on("data", (data) => {
-        console.log("Received move:", data);
-        setGame((prevGame) => {
-          const newGame = new Chess(prevGame.fen());
-          newGame.load(data);
-          return newGame;
-        });
+        if (data.type === "move") {
+          console.log("Received move:", data.fen);
+          setGame((prevGame) => {
+            const newGame = new Chess(prevGame.fen());
+            newGame.load(data.fen);
+            return newGame;
+          });
+        } else if (data.type === "sync") {
+          console.log("Syncing game state:", data.fen);
+          setGame(new Chess(data.fen));
+        }
       });
     });
-  }, [peer]);
+  }, [peer, game]);
 
   const handleMove = (move) => {
     try {
       setGame((prevGame) => {
         const newGame = new Chess(prevGame.fen());
         newGame.move(move);
-        if (connection && connection.open) {
-          console.log("Sending move:", newGame.fen());
-          connection.send(newGame.fen());
-        } else {
-          console.warn("No active connection to send move");
-        }
+        console.log("Sending move to all connections:", newGame.fen());
+        connections.forEach((conn) => {
+          if (conn.open) {
+            conn.send({ type: "move", fen: newGame.fen() });
+          }
+        });
         return newGame;
       });
     } catch (error) {
@@ -78,22 +84,28 @@ const App = () => {
     const conn = peer.connect(gameCode);
     conn.on("open", () => {
       console.log("Connected to host");
-      setConnection(conn);
+      setConnections((prevConnections) => [...prevConnections, conn]);
+      conn.send({ type: "sync-request" }); // Request current game state from host
     });
     conn.on("data", (data) => {
-      console.log("Received move:", data);
-      setGame((prevGame) => {
-        const newGame = new Chess(prevGame.fen());
-        newGame.load(data);
-        return newGame;
-      });
+      if (data.type === "move") {
+        console.log("Received move:", data.fen);
+        setGame((prevGame) => {
+          const newGame = new Chess(prevGame.fen());
+          newGame.load(data.fen);
+          return newGame;
+        });
+      } else if (data.type === "sync") {
+        console.log("Syncing game state:", data.fen);
+        setGame(new Chess(data.fen));
+      }
     });
   };
 
   return (
     <div className="app-container">
       <h1>P2P Chess</h1>
-      {!isHost && !connection ? (
+      {!isHost && connections.length === 0 ? (
         <div>
           <button onClick={createGame}>Host Game</button>
           <input
